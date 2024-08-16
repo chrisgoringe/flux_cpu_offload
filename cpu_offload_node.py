@@ -26,6 +26,11 @@ class OnDemandLinear(torch.nn.Module):
     def _apply(self, fn, recurse=True): pass
 
     def forward(self, x:torch.Tensor):
+        y = self._forward(x)
+        torch.cuda.empty_cache()
+        return y
+    
+    def _forward(self, x:torch.Tensor):
         if self.mode == CastMode.MANUAL:
             weight = self.wrapped.weight.to(x)
             bias   = self.wrapped.bias.to(x) if self.wrapped.bias is not None else None
@@ -34,18 +39,24 @@ class OnDemandLinear(torch.nn.Module):
             bias   = self.wrapped.bias.cuda() if self.wrapped.bias is not None else None
         with torch.autocast("cuda", enabled=(self.mode==CastMode.AUTO)):
             return torch.nn.functional.linear(x, weight, bias)
-
+            
 def lock_SingleStreamBlock_to_cpu(module:SingleStreamBlock, mode:int):
     module.linear1 = OnDemandLinear(module.linear1, mode)
     module.linear2 = OnDemandLinear(module.linear2, mode)
-    # attention to add
+    module.modulation.lin = OnDemandLinear(module.modulation.lin, mode)
 
 def lock_DoubleStreamBlock_to_cpu(module:DoubleStreamBlock, mode:int):
     module.txt_mlp = torch.nn.Sequential(OnDemandLinear(module.txt_mlp[0], mode), module.txt_mlp[1], 
                                          OnDemandLinear(module.txt_mlp[2], mode))
+    module.txt_mod.lin = OnDemandLinear(module.txt_mod.lin, mode)
+    module.txt_attn.qkv = OnDemandLinear(module.txt_attn.qkv, mode)
+    module.txt_attn.proj = OnDemandLinear(module.txt_attn.proj, mode)    
+
     module.img_mlp = torch.nn.Sequential(OnDemandLinear(module.img_mlp[0], mode), module.img_mlp[1], 
                                          OnDemandLinear(module.img_mlp[2], mode))
-    # attention to add
+    module.img_mod.lin = OnDemandLinear(module.img_mod.lin, mode)
+    module.img_attn.qkv = OnDemandLinear(module.img_attn.qkv, mode)
+    module.img_attn.proj = OnDemandLinear(module.img_attn.proj, mode)
 
 def split_model(model:ModelPatcher, number_of_single_blocks:int, number_of_double_blocks:int, mode:int):
     '''
@@ -76,7 +87,7 @@ class CPUOffLoad:
                         number_of_double_blocks=double_blocks_on_cpu, mode=CastMode.get(cast_mode))
         
         fraction_pinned   = ( 2*double_blocks_on_cpu + single_blocks_on_cpu ) / 57 
-        fraction_possible = 0.5 # what fraction of the whole thing could we possibly have pinned? Work out better!
+        fraction_possible = 0.9 
 
         m.model.memory_usage_factor *= (1 - fraction_possible*fraction_pinned)
         return (m,)
