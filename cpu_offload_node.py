@@ -86,7 +86,7 @@ class CPUOffLoad:
         m = split_model(model.clone(), number_of_single_blocks=single_blocks_on_cpu, 
                         number_of_double_blocks=double_blocks_on_cpu, mode=CastMode.get(cast_mode))
         
-        fraction_pinned   = ( 2*double_blocks_on_cpu + single_blocks_on_cpu ) / 57 
+        fraction_pinned   = ( 2*double_blocks_on_cpu + single_blocks_on_cpu ) / 76 
         fraction_possible = 0.9 
 
         m.model.memory_usage_factor *= (1 - fraction_possible*fraction_pinned)
