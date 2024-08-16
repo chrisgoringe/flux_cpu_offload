@@ -96,4 +96,4 @@ class UNETLoaderForce(UNETLoader):
     @classmethod
     def IS_CHANGED(self, unet_name, weight_dtype, force_reload):
         if force_reload=='yes': return float('NaN')
-        return unet_name+
+        return unet_name+weight_dtype
