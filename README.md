@@ -1,8 +1,6 @@
 # Flux CPU Offload
  
-## Work in Progress! 
-
-Reduce the memory needed by Flux without any reduction in quality, at the cost of some speed.
+Keep some FLUX layers in RAM until needed.
 
 ## What does it do?
 
@@ -11,7 +9,7 @@ being 'transformed' as it goes. Each layer has a very large number of parameters
 
 This node takes some of those layers, and pins (some of) their parameters on the CPU. They are transferred to the GPU only when needed.
 
-Transferring them takes time, so this is a bit slower, and it requires more RAM (potentially) but it frees up a lot of VRAM.
+Transferring them takes time, so this is a bit slower, and it requires more RAM but it frees up a lot of VRAM.
 
 ## How do I try it?
 
@@ -20,7 +18,7 @@ Install by going to your custom nodes directory and typing
 git pull https://github.com/ChrisGoringe/flux_cpu_offload
 ```
 
-To update (because this node is in active development), go into the `flux_cpu_offload` folder and type `git pull`
+To update, go into the `flux_cpu_offload` folder and type `git pull`
 
 ## Workflow?
 
@@ -38,11 +36,9 @@ The flux model has 19 `double block layers` and 38 `single block layers`. You ca
 
 If the model was loaded in one of the `bfloat8` types, the parameters are converted to `bfloat16` to be used. This setting controls how and when they are converted.
 
-There are three options:
-
 - `pre` stores the parameters on the cpu in `bfloat16`. This takes twice as much RAM but means they don't need to be cast when used, so it's faster.
 - `auto` stores the parameters as loaded, and uses autocast. Use this if you find you run out of RAM with `pre`.
-- `manual` is like `auto` but the casting is done manually. Don't use it!
+
 
 ## Error: 'OnDemandLinear' object has no attribute 'weight'
 
@@ -56,4 +52,4 @@ It shouldn't. If it does, please let me know!
 
 ## Does it work with LoRAs? 
 
-Don't know. Try!
+Yes, it seems to. 

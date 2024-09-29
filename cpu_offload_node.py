@@ -5,57 +5,43 @@ from comfy.model_patcher import ModelPatcher
 from nodes import UNETLoader
 import folder_paths
 
-class CastMode:
-    PRE = 1
-    AUTO = 2
-    MANUAL = 3
-
-    @classmethod
-    def get(cls, s:str):
-        if s.lower() == 'pre': return CastMode.PRE
-        if s.lower() == 'auto': return CastMode.AUTO
-        return CastMode.MANUAL
-
 class OnDemandLinear(torch.nn.Module):
-    def __init__(self, linear:torch.nn.Linear, mode:int):
+    def __init__(self, linear:torch.nn.Linear, mode:str):
         super().__init__()
         self.mode = mode
-        if mode==CastMode.PRE: linear.to(torch.bfloat16)
+        if mode=="pre": linear.to(torch.bfloat16)
         self.wrapped = linear
-
-    def _apply(self, fn, recurse=True): pass
+        self._parameters = {}
 
     def forward(self, x:torch.Tensor):
-        y = self._forward(x)
-        torch.cuda.empty_cache()
-        return y
-    
-    def _forward(self, x:torch.Tensor):
-        if self.mode == CastMode.MANUAL:
-            weight = self.wrapped.weight.to(x)
-            bias   = self.wrapped.bias.to(x) if self.wrapped.bias is not None else None
-        else:
-            weight = self.wrapped.weight.cuda()
-            bias   = self.wrapped.bias.cuda() if self.wrapped.bias is not None else None
-        with torch.autocast("cuda", enabled=(self.mode==CastMode.AUTO)):
-            return torch.nn.functional.linear(x, weight, bias)
+        weight = self.wrapped.weight.cuda()
+        bias   = self.wrapped.bias.cuda() if self.wrapped.bias is not None else None
+        try:
+            with torch.autocast("cuda", enabled=(self.mode=="auto")):
+                return torch.nn.functional.linear(x, weight, bias)
+        finally:
+            del weight, bias
+            torch.cuda.empty_cache()
+        
+    def _save_to_state_dict(self, *args, **kwargs): pass  # can't save me, but won't appear in size calcs
+    def _apply(self, fn, recurse=True): pass   # Don't get moved by anyone else
             
 def lock_SingleStreamBlock_to_cpu(module:SingleStreamBlock, mode:int):
-    module.linear1 = OnDemandLinear(module.linear1, mode)
-    module.linear2 = OnDemandLinear(module.linear2, mode)
+    module.linear1        = OnDemandLinear(module.linear1, mode)
+    module.linear2        = OnDemandLinear(module.linear2, mode)
     module.modulation.lin = OnDemandLinear(module.modulation.lin, mode)
 
 def lock_DoubleStreamBlock_to_cpu(module:DoubleStreamBlock, mode:int):
-    module.txt_mlp = torch.nn.Sequential(OnDemandLinear(module.txt_mlp[0], mode), module.txt_mlp[1], 
-                                         OnDemandLinear(module.txt_mlp[2], mode))
-    module.txt_mod.lin = OnDemandLinear(module.txt_mod.lin, mode)
-    module.txt_attn.qkv = OnDemandLinear(module.txt_attn.qkv, mode)
+    module.txt_mlp       = torch.nn.Sequential(OnDemandLinear(module.txt_mlp[0], mode), module.txt_mlp[1], 
+                                               OnDemandLinear(module.txt_mlp[2], mode))
+    module.txt_mod.lin   = OnDemandLinear(module.txt_mod.lin, mode)
+    module.txt_attn.qkv  = OnDemandLinear(module.txt_attn.qkv, mode)
     module.txt_attn.proj = OnDemandLinear(module.txt_attn.proj, mode)    
 
-    module.img_mlp = torch.nn.Sequential(OnDemandLinear(module.img_mlp[0], mode), module.img_mlp[1], 
-                                         OnDemandLinear(module.img_mlp[2], mode))
-    module.img_mod.lin = OnDemandLinear(module.img_mod.lin, mode)
-    module.img_attn.qkv = OnDemandLinear(module.img_attn.qkv, mode)
+    module.img_mlp       = torch.nn.Sequential(OnDemandLinear(module.img_mlp[0], mode), module.img_mlp[1], 
+                                               OnDemandLinear(module.img_mlp[2], mode))
+    module.img_mod.lin   = OnDemandLinear(module.img_mod.lin, mode)
+    module.img_attn.qkv  = OnDemandLinear(module.img_attn.qkv, mode)
     module.img_attn.proj = OnDemandLinear(module.img_attn.proj, mode)
 
 def split_model(model:ModelPatcher, number_of_single_blocks:int, number_of_double_blocks:int, mode:int):
@@ -68,7 +54,8 @@ def split_model(model:ModelPatcher, number_of_single_blocks:int, number_of_doubl
     for i in range(min(number_of_double_blocks, len(diffusion_model.double_blocks))):
         lock_DoubleStreamBlock_to_cpu(diffusion_model.double_blocks[i], mode)
     return model
-    
+
+CAST_TIP = "pre stores 16 bit weights in RAM - faster, but uses more RAM.\nauto keeps 8 bit in RAM - slower, but saves RAM\n"
 class CPUOffLoad:
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "func"
@@ -79,17 +66,12 @@ class CPUOffLoad:
         "model": ("MODEL",{}),
         "double_blocks_on_cpu": ("INT",{"default":0, "min":0, "max":19}),
         "single_blocks_on_cpu": ("INT",{"default":0, "min":0, "max":38}),
-        "cast_mode":            (["pre","auto","manual"],{})
+        "cast_mode":            (["pre","auto"],{"tooltip":CAST_TIP})
     } }
 
     def func(self, model, double_blocks_on_cpu, single_blocks_on_cpu, cast_mode): 
         m = split_model(model.clone(), number_of_single_blocks=single_blocks_on_cpu, 
-                        number_of_double_blocks=double_blocks_on_cpu, mode=CastMode.get(cast_mode))
-        
-        fraction_pinned   = ( 2*double_blocks_on_cpu + single_blocks_on_cpu ) / 76 
-        fraction_possible = 0.9 
-
-        m.model.memory_usage_factor *= (1 - fraction_possible*fraction_pinned)
+                        number_of_double_blocks=double_blocks_on_cpu, mode=cast_mode)
         return (m,)
 
 class UNETLoaderForce(UNETLoader):
